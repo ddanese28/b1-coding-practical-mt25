@@ -74,9 +74,39 @@ class Mission:
         return cls(reference, cave_height, cave_depth)
 
     @classmethod
-    def from_csv(cls, file_name: str):
-        # You are required to implement this method
-        pass
+    def from_csv(cls, file_name: str | None = None):
+        """Create a Mission instance from a CSV file.
+
+        If file_name is None, defaults to the repository's `data/mission.csv`.
+        The CSV is expected to contain at least the columns:
+        'reference', 'cave_height', 'cave_depth'.
+        """
+        from pathlib import Path
+        try:
+            import pandas as _pd
+        except Exception as e:
+            raise RuntimeError("pandas is required to read mission CSV files") from e
+
+        if file_name is None:
+            file_path = Path(__file__).resolve().parents[1] / "data" / "mission.csv"
+        else:
+            file_path = Path(file_name)
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"Mission CSV not found: {file_path}")
+
+        df = _pd.read_csv(file_path)
+
+        expected = ["reference", "cave_height", "cave_depth"]
+        for col in expected:
+            if col not in df.columns:
+                raise ValueError(f"Missing required column '{col}' in mission CSV")
+
+        reference = df["reference"].to_numpy(dtype=float)
+        cave_height = df["cave_height"].to_numpy(dtype=float)
+        cave_depth = df["cave_depth"].to_numpy(dtype=float)
+
+        return cls(reference, cave_height, cave_depth)
 
 
 class ClosedLoop:
@@ -93,11 +123,31 @@ class ClosedLoop:
         positions = np.zeros((T, 2))
         actions = np.zeros(T)
         self.plant.reset_state()
+        prev_error = 0.0
 
         for t in range(T):
             positions[t] = self.plant.get_position()
             observation_t = self.plant.get_depth()
-            # Call your controller here
+            # compute control action using the provided controller
+            # e[t] = r[t] - y[t]
+            r_t = float(mission.reference[t])
+            e_t = r_t - float(observation_t)
+
+            ctrl = self.controller
+            if hasattr(ctrl, "step"):
+                # preferred API: step(reference, measurement)
+                actions[t] = float(ctrl.step(r_t, observation_t))
+            elif hasattr(ctrl, "compute"):
+                # alternative API: compute(error, prev_error)
+                actions[t] = float(ctrl.compute(float(e_t), float(prev_error)))
+            elif callable(ctrl):
+                # callable(error, prev_error)
+                actions[t] = float(ctrl(float(e_t), float(prev_error)))
+            else:
+                raise TypeError("Controller does not implement a supported API (step/compute/callable)")
+
+            # update previous error for next timestep
+            prev_error = float(e_t)
             self.plant.transition(actions[t], disturbances[t])
 
         return Trajectory(positions)
